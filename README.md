@@ -4,7 +4,7 @@ We use python 3.10 and pytorch 1.13 for development.
 
 
 ### How to link Python to R
-We use the python package `rpy2` to call the `dHSIC` package from R.
+We use the python package `rpy2` to call the [`dHSIC` package from R](https://CRAN.R-project.org/package=dHSIC).
 
 The R version must be 4.2.0 or higher.
 
