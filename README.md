@@ -1,6 +1,11 @@
 # To Reproduce All the Results
 
-We use python 3.10 and pytorch 1.13 for development.
+The development was done with:
+- Ubuntu 20.04.5 LTS
+- python 3.10.4
+- pytorch 1.12
+- R version 4.2.2 Patched (2022-11-10 r83330)
+- dHSIC 2.1
 
 
 ### How to link Python to R
