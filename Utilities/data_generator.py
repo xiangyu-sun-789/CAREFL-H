@@ -9,6 +9,10 @@ from Utilities.util_functions import is_dag, draw_DAGs_using_LINGAM
 
 class SEM_Noises:
     standard_gaussian = "standard-gaussian"
+    gaussian0_4 = "gaussian0_4"
+    gaussian0_25 = "gaussian0_25"
+    gaussian0_100 = "gaussian0_100"
+    gaussian0_400 = "gaussian0_400"
     uniform = "uniform"
     exp = "exp"
     laplace = "laplace"
@@ -20,6 +24,9 @@ class SEM_Functionals:
     LSNM_tanh_exp_cosine = "LSNM-tanh-exp-cosine"
     LSNM_sine_tanh = "LSNM-sine-tanh"
     LSNM_sigmoid_sigmoid = "LSNM-sigmoid-sigmoid"
+    ANM_tanh = "ANM-tanh"
+    ANM_sine = "ANM-sine"
+    ANM_sigmoid = "ANM-sigmoid"
 
 
 def simulate_dag(d, s0, graph_type):
@@ -84,75 +91,75 @@ def simulate_linear_parameters(B, w_ranges=((-2.0, -0.5), (0.5, 2.0))):
     return W
 
 
-def simulate_linear_sem(B, n, noise_type, noise_scale=None):
-    """Simulate samples from linear SEM with specified type of noise.
-
-    For uniform, noise z ~ uniform(-a, a), where a = noise_scale.
-
-    Args:
-        W (np.ndarray): [d, d] weighted adj matrix of DAG
-        n (int): num of samples, n=inf mimics population risk
-        noise_type (str): gauss, exp, gumbel, uniform, logistic, poisson
-        noise_scale (np.ndarray): scale parameter of additive noise, default all ones
-
-    Returns:
-        X (np.ndarray): [n, d] sample matrix, [d, d] if n=inf
-        W: the simulated DAG with adjacency weights
-    """
-
-    def _simulate_single_equation(X, w, scale):
-        """X: [n, num of parents], w: [num of parents], x: [n]"""
-        if noise_type == SEM_Noises.standard_gaussian:
-            z = np.random.normal(size=n)
-            x = X @ w + z
-
-        elif noise_type == SEM_Noises.uniform:
-            z = np.random.uniform(low=-1 * scale, high=scale, size=n)
-            x = X @ w + z
-
-        elif noise_type == SEM_Noises.laplace:
-            z = np.random.laplace(loc=0.0, scale=1.0, size=n)
-            x = X @ w + z
-
-        elif noise_type == SEM_Noises.exp:
-            # on Wikipedia, lambda is the inverse scale, so lambda = 1/scale, scale = 1/lambda
-            lambdaa = 1
-            z = np.random.exponential(scale=1.0 / lambdaa, size=n)
-            x = X @ w + z
-        else:
-            raise ValueError('unknown noise type')
-        return x, z
-
-    W = simulate_linear_parameters(B)
-
-    d = W.shape[0]
-    if noise_scale is None:
-        scale_vec = np.ones(d)
-    elif np.isscalar(noise_scale):
-        scale_vec = noise_scale * np.ones(d)
-    else:
-        if len(noise_scale) != d:
-            raise ValueError('noise scale must be a scalar or has length d')
-        scale_vec = noise_scale
-    if not is_dag(W):
-        raise ValueError('W must be a DAG')
-    if np.isinf(n):  # population risk for linear gauss SEM
-        if noise_type == 'gauss':
-            # make 1/d X'X = true cov
-            X = np.sqrt(d) * np.diag(scale_vec) @ np.linalg.inv(np.eye(d) - W)
-            return X
-        else:
-            raise ValueError('population risk not available')
-    # empirical risk
-    G = ig.Graph.Weighted_Adjacency(W.tolist())
-    ordered_vertices = G.topological_sorting()
-    assert len(ordered_vertices) == d
-    X = np.zeros([n, d])
-    Z = np.zeros([n, d])
-    for j in ordered_vertices:
-        parents = G.neighbors(j, mode=ig.IN)
-        X[:, j], Z[:, j] = _simulate_single_equation(X[:, parents], W[parents, j], scale_vec[j])
-    return X, Z, None, W
+# def simulate_linear_sem(B, n, noise_type, noise_scale=None):
+#     """Simulate samples from linear SEM with specified type of noise.
+#
+#     For uniform, noise z ~ uniform(-a, a), where a = noise_scale.
+#
+#     Args:
+#         W (np.ndarray): [d, d] weighted adj matrix of DAG
+#         n (int): num of samples, n=inf mimics population risk
+#         noise_type (str): gauss, exp, gumbel, uniform, logistic, poisson
+#         noise_scale (np.ndarray): scale parameter of additive noise, default all ones
+#
+#     Returns:
+#         X (np.ndarray): [n, d] sample matrix, [d, d] if n=inf
+#         W: the simulated DAG with adjacency weights
+#     """
+#
+#     def _simulate_single_equation(X, w, scale):
+#         """X: [n, num of parents], w: [num of parents], x: [n]"""
+#         if noise_type == SEM_Noises.standard_gaussian:
+#             z = np.random.normal(size=n)
+#             x = X @ w + z
+#
+#         elif noise_type == SEM_Noises.uniform:
+#             z = np.random.uniform(low=-1 * scale, high=scale, size=n)
+#             x = X @ w + z
+#
+#         elif noise_type == SEM_Noises.laplace:
+#             z = np.random.laplace(loc=0.0, scale=1.0, size=n)
+#             x = X @ w + z
+#
+#         elif noise_type == SEM_Noises.exp:
+#             # on Wikipedia, lambda is the inverse scale, so lambda = 1/scale, scale = 1/lambda
+#             lambdaa = 1
+#             z = np.random.exponential(scale=1.0 / lambdaa, size=n)
+#             x = X @ w + z
+#         else:
+#             raise ValueError('unknown noise type')
+#         return x, z
+#
+#     W = simulate_linear_parameters(B)
+#
+#     d = W.shape[0]
+#     if noise_scale is None:
+#         scale_vec = np.ones(d)
+#     elif np.isscalar(noise_scale):
+#         scale_vec = noise_scale * np.ones(d)
+#     else:
+#         if len(noise_scale) != d:
+#             raise ValueError('noise scale must be a scalar or has length d')
+#         scale_vec = noise_scale
+#     if not is_dag(W):
+#         raise ValueError('W must be a DAG')
+#     if np.isinf(n):  # population risk for linear gauss SEM
+#         if noise_type == 'gauss':
+#             # make 1/d X'X = true cov
+#             X = np.sqrt(d) * np.diag(scale_vec) @ np.linalg.inv(np.eye(d) - W)
+#             return X
+#         else:
+#             raise ValueError('population risk not available')
+#     # empirical risk
+#     G = ig.Graph.Weighted_Adjacency(W.tolist())
+#     ordered_vertices = G.topological_sorting()
+#     assert len(ordered_vertices) == d
+#     X = np.zeros([n, d])
+#     Z = np.zeros([n, d])
+#     for j in ordered_vertices:
+#         parents = G.neighbors(j, mode=ig.IN)
+#         X[:, j], Z[:, j] = _simulate_single_equation(X[:, parents], W[parents, j], scale_vec[j])
+#     return X, Z, None, W
 
 
 def simulate_nonlinear_sem(B, n, sem_type, noise_type, noise_scale=None, g_magnitude=None):
@@ -176,6 +183,18 @@ def simulate_nonlinear_sem(B, n, sem_type, noise_type, noise_scale=None, g_magni
 
         if noise_type == SEM_Noises.standard_gaussian:
             z = np.random.normal(loc=0.0, scale=1.0, size=n)  # N(0, 1)
+
+        elif noise_type == SEM_Noises.gaussian0_4:
+            z = np.random.normal(loc=0.0, scale=2.0, size=n)
+
+        elif noise_type == SEM_Noises.gaussian0_25:
+            z = np.random.normal(loc=0.0, scale=5.0, size=n)
+
+        elif noise_type == SEM_Noises.gaussian0_100:
+            z = np.random.normal(loc=0.0, scale=10.0, size=n)
+
+        elif noise_type == SEM_Noises.gaussian0_400:
+            z = np.random.normal(loc=0.0, scale=20.0, size=n)
 
         elif noise_type == SEM_Noises.uniform:
             z = np.random.uniform(low=-1 * scale, high=scale, size=n)
@@ -272,6 +291,35 @@ def simulate_nonlinear_sem(B, n, sem_type, noise_type, noise_scale=None, g_magni
 
             if np.any(g <= 0):
                 raise Exception("g(X) in LSNM must be positive.")
+
+        elif sem_type == SEM_Functionals.ANM_tanh:
+            hidden = 1
+            W1 = np.random.uniform(low=0.5, high=2.0, size=[pa_size, hidden])
+            W1[np.random.rand(*W1.shape) < 0.5] *= -1
+            W2 = np.random.uniform(low=0.5, high=2.0, size=hidden)
+            W2[np.random.rand(hidden) < 0.5] *= -1
+            W3 = np.random.uniform(low=0.5, high=2.0, size=[pa_size, hidden])
+            W3[np.random.rand(*W3.shape) < 0.5] *= -1
+            W4 = np.random.uniform(low=0.5, high=2.0, size=hidden)
+            W4[np.random.rand(hidden) < 0.5] *= -1
+            x = g_magnitude * z + np.tanh(X_parents @ W3) @ W4
+
+        elif sem_type == SEM_Functionals.ANM_sine:
+            hidden = 1
+            W3 = np.random.uniform(low=0.5, high=2.0, size=[pa_size, hidden])
+            W3[np.random.rand(*W3.shape) < 0.5] *= -1
+            W4 = np.random.uniform(low=0.5, high=2.0, size=hidden)
+            W4[np.random.rand(hidden) < 0.5] *= -1
+            x = np.sin(X_parents @ W3) @ W4 + g_magnitude * z
+
+        elif sem_type == SEM_Functionals.ANM_sigmoid:
+            hidden = 1
+            W3 = np.random.uniform(low=0.5, high=2.0, size=[pa_size, hidden])
+            W3[np.random.rand(*W3.shape) < 0.5] *= -1
+            W4 = np.random.uniform(low=0.5, high=2.0, size=hidden)
+            W4[np.random.rand(hidden) < 0.5] *= -1
+
+            x = sigmoid(X_parents @ W3) @ W4 + g_magnitude * z
 
         else:
             raise ValueError('unknown sem type')

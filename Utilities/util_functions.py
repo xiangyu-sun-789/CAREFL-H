@@ -6,11 +6,12 @@ import igraph as ig
 import rpy2
 import torch
 import lingam
-from matplotlib import pyplot as plt
+from matplotlib import pyplot as plt, ticker
 from sklearn import preprocessing
 from lingam.utils import make_dot
 from numpy.random import laplace, uniform, normal
 from scipy.stats import kstest
+import rpy2.robjects as robj
 
 
 def normalize_data(X):
@@ -380,6 +381,16 @@ def call_dHSIC_test_from_R(dHSIC, x_python, y_python, dHSIC_test_method, kernels
     return independence_conclusion
 
 
+def convert_numpy_to_r(normalized_X):
+    # convert numpy array to R matrix
+    # https://stackoverflow.com/a/10037302
+    nr, nc = normalized_X.shape
+    xvec = robj.FloatVector(normalized_X.transpose().reshape((normalized_X.size)))
+    normalized_X_R = robj.r.matrix(xvec, nrow=nr, ncol=nc)
+
+    return normalized_X_R
+
+
 def read_accuracy_results(data_type, default_result_file, result_file, split, x_label):
     dfault_df = pd.read_csv(default_result_file)
     dfault_df_08 = dfault_df[dfault_df[' train_test_split'].str.contains(split)]
@@ -588,9 +599,10 @@ def make_likelihood_vs_mcv_plot(SEM, noise, key_str, label):
     """
 
     minus_math_symbol = u"\u2212"  # looks more like munis than "-"
+    divide_math_symbol = "/"  # looks more like munis than "-"
 
     causal_vs_anti_criterion_differences = []
-    causal_vs_anti_mcv_differences = []
+    causal_vs_anti_mcv_quotients = []
 
     root_directory_path = "../CAREFL_H/temp_results/simulated/vary_conditional_variance/CAREFL/split_1.0/prior_gaussian/" \
                           + SEM + "/" + noise + "/epoch_750/_/Ground-truth_SEM_" + SEM + "/Noise_" + noise
@@ -628,7 +640,7 @@ def make_likelihood_vs_mcv_plot(SEM, noise, key_str, label):
                         elif "mean_var_anti_causal_direction" in line:
                             mcv_anti_causal = float(line.split(":")[-1])
 
-                    causal_vs_anti_mcv_differences.append(mcv_causal - mcv_anti_causal)
+                    causal_vs_anti_mcv_quotients.append(mcv_causal / mcv_anti_causal)
 
                     ######################################################################
                     # go through result.txt line by line
@@ -686,11 +698,11 @@ def make_likelihood_vs_mcv_plot(SEM, noise, key_str, label):
                     causal_vs_anti_criterion_differences.append(causal_log_criterion - anti_causal_log_criterion)
 
     # print(len(causal_vs_anti_criterion_differences))
-    # print(len(causal_vs_anti_mcv_differences))
+    # print(len(causal_vs_anti_mcv_quotients))
 
     # MCV vs Likelihood
-    plt.plot(causal_vs_anti_mcv_differences, causal_vs_anti_criterion_differences, 'o')
-    plt.xlabel("Mean CV: Causal " + minus_math_symbol + " Anti-Causal", fontsize=20)
+    plt.plot(causal_vs_anti_mcv_quotients, causal_vs_anti_criterion_differences, 'o')
+    plt.xlabel("Mean CV: Causal " + divide_math_symbol + " Anti-Causal", fontsize=20)
     plt.ylabel(label.replace(" ", "-") + ": Causal " + minus_math_symbol + " Anti-Causal", fontsize=16)
     plt.xticks(fontsize=20)
     plt.yticks(fontsize=20)
@@ -701,6 +713,147 @@ def make_likelihood_vs_mcv_plot(SEM, noise, key_str, label):
                             'mcv_vs_{}_'.format(label.replace(" ", "_")) + SEM + '_' + noise + '.png')
     plt.savefig(png_file)
     plt.close('all')  # close all plots, otherwise it would consume memory
+
+
+def extract_R_versions(package_data):
+    return dict(zip(
+        package_data.rx(True, 'Package'),  # get Package column
+        package_data.rx(True, 'Version')  # get Version column
+    ))
+
+
+def make_MisleadingCVs_vs_Accuracy_plot(SEM, noise, file_root_path, x_label, y_label, x_key_str, y_key_str_dic,
+                                        marker_style_dic, marker_size_dic, marker_color_dic, methods):
+    """
+    plot: Percentage Datasets With Misleading CVs vs. Accuracy
+    """
+
+    for method in methods:
+        y_key_str = y_key_str_dic[method]
+        marker_style = marker_style_dic[method]
+        marker_size = marker_size_dic[method]
+        marker_color = marker_color_dic[method]
+
+        full_file_name = os.path.join(file_root_path, "{}/file_all_results_{}.csv".format(method, SEM))
+
+        dfault_df = pd.read_csv(full_file_name)
+        dfault_df_noise = dfault_df[dfault_df[' noise'].str.contains(noise)]
+
+        x_values = pd.to_numeric(dfault_df_noise[x_key_str]).tolist()
+        y_values = pd.to_numeric(dfault_df_noise[y_key_str]).tolist()
+
+        # plot
+        # for example, change 1 to 10%
+        plt.plot([i * 10 for i in x_values], y_values, marker_style, markersize=marker_size, color=marker_color)
+
+    plt.xlabel(x_label, fontsize=16)
+    plt.ylabel(y_label, fontsize=16)
+    plt.xticks(fontsize=20)
+    plt.yticks(fontsize=20)
+    plt.ylim(-0.1, 1.1)
+    # make x-axis show integer values only
+    # https://stackoverflow.com/questions/52229875/how-to-force-matplotlib-to-show-values-on-x-axis-as-integers
+    plt.gca().xaxis.set_major_locator(ticker.MultipleLocator(10))  # every 10 integers
+
+    lgnd = plt.legend(methods, fontsize=10)
+
+    # make the marker the same size on the legend
+    for legend_handle in lgnd.legendHandles:
+        legend_handle.set_markersize(10)
+
+    plt.tight_layout()
+    png_file = os.path.join("/Users/xiangyus/Downloads", 'misleading_CVs_vs_accuracy_{}_{}.png'.format(SEM, noise))
+    plt.savefig(png_file)
+    plt.close('all')  # close all plots, otherwise it would consume memory
+
+
+def make_ANM_plots(folder_name, methods, y_key_str_dic, marker_style_dic, marker_size_dic, marker_color_dic, SEMs):
+    file_root_path = "/Users/xiangyus/Development/My_Useful_Utilities/CAREFL_H/saved_results/" + folder_name
+
+    x_label = "Percentage of Datasets With Misleading CVs (%)"
+    y_label = "Accuracy"
+    x_key_str = " number_causal_bigger_CV"
+
+    for SEM in SEMs:
+        noise = "uniform"
+        make_MisleadingCVs_vs_Accuracy_plot(SEM, noise, file_root_path, x_label, y_label, x_key_str, y_key_str_dic,
+                                            marker_style_dic, marker_size_dic, marker_color_dic, methods)
+
+        noise = "standard-gaussian"
+        make_MisleadingCVs_vs_Accuracy_plot(SEM, noise, file_root_path, x_label, y_label, x_key_str, y_key_str_dic,
+                                            marker_style_dic, marker_size_dic, marker_color_dic, methods)
+
+
+def make_all_MisleadingCVs_vs_Accuracy_plots():
+    ##############################
+    # ANMs
+    ##############################
+
+    folder_name = "ANM_data"
+
+    methods = ["CAREFL-ANM-M", "CAREFL-ANM-Sigma-M", "CAM"]
+
+    SEMs = ["ANM-sine", "ANM-tanh", "ANM-sigmoid"]
+
+    marker_size_dic = {
+        "CAREFL-ANM-M": 10,
+        "CAREFL-ANM-Sigma-M": 20,
+        "CAM": 20
+    }
+
+    # https://matplotlib.org/stable/api/markers_api.html
+    marker_style_dic = {
+        "CAREFL-ANM-M": "o",
+        "CAREFL-ANM-Sigma-M": "+",
+        "CAM": "x"
+    }
+
+    marker_color_dic = {
+        "CAREFL-ANM-M": "blue",
+        "CAREFL-ANM-Sigma-M": "green",
+        "CAM": "orange"
+    }
+
+    y_key_str_dic = {
+        "CAREFL-ANM-M": " CAREFL-LR accuracy",
+        "CAREFL-ANM-Sigma-M": " CAREFL-LR accuracy",
+        "CAM": " CAM accuracy"
+    }
+
+    make_ANM_plots(folder_name, methods, y_key_str_dic, marker_style_dic, marker_size_dic, marker_color_dic, SEMs)
+
+    ##############################
+    # LSNMs
+    ##############################
+
+    folder_name = "LSNM_data"
+
+    methods = ["CAREFL-M", "LOCI-M"]
+
+    SEMs = ["LSNM-tanh-exp-cosine", "LSNM-sine-tanh", "LSNM-sigmoid-sigmoid"]
+
+    # size decreases in the order of `methods`, so that the later ones do not cover the earlier ones.
+    marker_size_dic = {
+        "CAREFL-M": 20,
+        "LOCI-M": 10
+    }
+
+    marker_style_dic = {
+        "CAREFL-M": "x",
+        "LOCI-M": "o"
+    }
+
+    marker_color_dic = {
+        "CAREFL-M": "blue",
+        "LOCI-M": "orange"
+    }
+
+    y_key_str_dic = {
+        "CAREFL-M": " CAREFL-LR accuracy",
+        "LOCI-M": " LOCI_NN accuracy"
+    }
+
+    make_ANM_plots(folder_name, methods, y_key_str_dic, marker_style_dic, marker_size_dic, marker_color_dic, SEMs)
 
 
 if __name__ == "__main__":
@@ -730,3 +883,5 @@ if __name__ == "__main__":
     key_str = "estimated dHSIC value between X and reconstructed Z"
     label = "HSIC Value"
     make_likelihood_vs_mcv_plot(SEM, noise, key_str, label)
+
+    make_all_MisleadingCVs_vs_Accuracy_plots()

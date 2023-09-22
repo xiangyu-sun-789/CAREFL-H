@@ -119,6 +119,10 @@ class AffineCL(nn.Module):
 
         self.fix_AffineCL_forward = fix_AffineCL_forward
 
+        # for CAREFL-ANM-signma
+        self.phi0 = nn.Parameter(torch.randn(1, self.dim // 2), requires_grad=True)
+        self.phi1 = nn.Parameter(torch.randn(1, self.dim // 2), requires_grad=True)
+
     def forward(self, x):
         # renamed as forward_affine()
         raise NotImplementedError
@@ -165,6 +169,13 @@ class AffineCL(nn.Module):
         return z, log_det0, log_det1
 
     def forward_ANM(self, x):
+
+        """
+        P(x,y) = P_{Z_X}(x-t0) * 1 * P_{Z_Y}(y-t1) * 1
+
+        log P(x,y) = log P_{Z_X}(x-t0) + 0 + log P_{Z_Y}(y-t1) + 0
+        """
+
         if self.checkerboard:
             x0, x1 = x[:, ::2], x[:, 1::2]
         else:
@@ -184,14 +195,61 @@ class AffineCL(nn.Module):
         z0 = x0 - t0
         z1 = x1 - t1
 
-        log_det = 0  # log(abs(1 * 1 - 0)) = log1 = 0
+        log_det0 = 0  # log1 = 0
+        log_det1 = 0  # log1 = 0
 
         if self.parity:
             z0, z1 = z1, z0
 
         z = torch.cat([z0, z1], dim=1)
 
-        return z, log_det
+        return z, log_det0, log_det1
+
+    def forward_ANM_signma(self, x):
+
+        """
+        Y = f(X) + alpha * Z
+
+        P(x,y) = P_{Z_X}((x-t0) / alpha0) * 1/alpha0 * P_{Z_Y}((y-t1) / alpha1) * 1/alpha1
+
+        log P(x,y) = log P_{Z_X}((x-t0) / alpha0) + log 1/alpha0 + log P_{Z_Y}((y-t1) / alpha1) + log 1/alpha1
+
+        to make sure alpha is always positive:
+        let phi = log 1/alpha
+        log P(x,y) = log P_{Z_X}((x-t0) * exp(phi0)) + phi0 + log P_{Z_Y}((y-t1) * exp(phi1)) + phi1
+        """
+
+        if self.checkerboard:
+            x0, x1 = x[:, ::2], x[:, 1::2]
+        else:
+            x0, x1 = x[:, :self.dim // 2], x[:, self.dim // 2:]
+
+        if self.parity:
+            x0, x1 = x1, x0
+
+        t1 = self.t_cond(x0)
+        t0 = self.t_base if self.t_base is not None else torch.zeros_like(x0)
+
+        phi0 = self.phi0
+        phi1 = self.phi1
+
+        # x0 = t0 + z0
+        # x1 = t1(x0) + z1
+        # z0 = x0 - t0
+        # z1 = x1 - t1(x0)
+
+        z0 = (x0 - t0) * torch.exp(phi0)
+        z1 = (x1 - t1) * torch.exp(phi1)
+
+        log_det0 = torch.sum(torch.ones_like(t1) * phi0, dim=1)
+        log_det1 = torch.sum(torch.ones_like(t1) * phi1, dim=1)
+
+        if self.parity:
+            z0, z1 = z1, z0
+
+        z = torch.cat([z0, z1], dim=1)
+
+        return z, log_det0, log_det1
 
     def forward_linear(self, x):
         if self.checkerboard:
@@ -518,7 +576,7 @@ class NormalizingFlow(nn.Module):
             if self.flow_SEM_type == "affine":
                 x, ld0, ld1 = flow.forward_affine(x)
             elif self.flow_SEM_type == "ANM":
-                x, ld = flow.forward_ANM(x)
+                x, ld0, ld1 = flow.forward_ANM(x)
             elif self.flow_SEM_type == "linear":
                 x, ld = flow.forward_linear(x)
             else:

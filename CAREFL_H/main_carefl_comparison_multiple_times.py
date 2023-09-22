@@ -3,6 +3,7 @@ import math
 import os
 import random
 import sys
+import networkx as nx
 import numpy as np
 import torch
 import pandas as pd
@@ -15,13 +16,14 @@ sys.path.append(os.path.abspath("../algorithms/loci"))
 from Utilities.data_generator import simulate_dag, simulate_nonlinear_sem, SEM_Functionals, SEM_Noises, \
     read_Tubingen_data_file, is_bivariate_Tubingen_dataset
 from Utilities.util_functions import set_random_seed, draw_DAGs_using_LINGAM, normalize_data, plot_data_distributions, \
-    append_to_file, call_dHSIC_from_R, plot_datapoints, set_random_seed_R
+    append_to_file, call_dHSIC_from_R, plot_datapoints, set_random_seed_R, extract_R_versions, convert_numpy_to_r
 from algorithms.loci.run_individual import run_LinReg_Convex_LSNM, run_NN_LSNM, infer_direction_results
 
 # Using R inside python
 # https://stackoverflow.com/questions/55797564/how-to-import-r-packages-in-python
 import rpy2.robjects.packages as rpackages
 from rpy2.robjects.packages import importr
+from rpy2.robjects import r
 
 from algorithms.carefl.models import CAREFL
 
@@ -29,7 +31,7 @@ from algorithms.carefl.models import CAREFL
 def run_carefl_in_one_direction(direction, normalized_X, result_folder, recons_error_figure_title, result_file,
                                 B_true, updated_batch_size, split, fix_AffineCL_forward, dHSIC, dHSIC_kernels,
                                 result_folder_method, carefl_nl, carefl_nh, carefl_prior_dist, carefl_epochs,
-                                device, carefl_weight_decay):
+                                device, carefl_weight_decay, flow_SEM_type):
     ############################################
     # train CAREFL to fit the data
     ############################################
@@ -38,7 +40,7 @@ def run_carefl_in_one_direction(direction, normalized_X, result_folder, recons_e
 
     carefl_model = create_carefl_model(split, True if fix_AffineCL_forward else False, updated_batch_size,
                                        result_folder_method, carefl_nl, carefl_nh, carefl_prior_dist, carefl_epochs,
-                                       device, carefl_weight_decay)
+                                       device, carefl_weight_decay, flow_SEM_type)
 
     train_set, _, test_dset_numpy, dim, _ = carefl_model._get_datasets(normalized_X)
     carefl_model.dim = dim
@@ -102,11 +104,11 @@ def run_carefl_in_one_direction(direction, normalized_X, result_folder, recons_e
     # save testing log-likelihoods
     if direction == "X1->X2":
         _, test_log_likelihood_mean, _, _, test_log_p_x1_mean, test_log_p_x2_mean, test_log_det1, test_log_det2, \
-        test_log_p_z0_mean, test_log_p_z1_mean = carefl_model._evaluate([carefl_model.flow], test_dset_numpy)
+            test_log_p_z0_mean, test_log_p_z1_mean = carefl_model._evaluate([carefl_model.flow], test_dset_numpy)
     elif direction == "X2->X1":
         _, test_log_likelihood_mean, _, _, test_log_p_x1_mean, test_log_p_x2_mean, test_log_det1, test_log_det2, \
-        test_log_p_z0_mean, test_log_p_z1_mean = carefl_model._evaluate([carefl_model.flow], test_dset_numpy,
-                                                                        parity=True)
+            test_log_p_z0_mean, test_log_p_z1_mean = carefl_model._evaluate([carefl_model.flow], test_dset_numpy,
+                                                                            parity=True)
     else:
         raise Exception("What??? direction={}".format(direction))
 
@@ -186,20 +188,21 @@ def run_carefl_in_one_direction(direction, normalized_X, result_folder, recons_e
         plot_data_distributions(result_folder, recons_error_figure_title, recons_Z1, "reconstructed Z1", recons_Z2,
                                 "reconstructed Z2")
 
-        # compute and plot the Reconstructed X using the Reconstructed Z
-        recons_X = carefl_model._backward_flow(recons_Z)
-        recons_X1 = recons_X[:, 0]
-        recons_X2 = recons_X[:, 1]
-        if np.all(B_true == np.array([[0, 1], [0, 0]])):
-            # ground truth direction: X1->X2
-            plot_title = "Reconstructed X"
-            plot_datapoints(result_folder, plot_title, recons_X1, recons_X2, "Reconstructed X1", "Reconstructed X2")
-        elif np.all(B_true == np.array([[0, 0], [1, 0]])):
-            # ground truth direction: X2->X1
-            plot_title = "Reconstructed X"
-            plot_datapoints(result_folder, plot_title, recons_X2, recons_X1, "Reconstructed X2", "Reconstructed X1")
-        else:
-            raise Exception("What??? B_true=\n{}".format(B_true))
+        if flow_SEM_type == "affine":
+            # compute and plot the Reconstructed X using the Reconstructed Z
+            recons_X = carefl_model._backward_flow(recons_Z)
+            recons_X1 = recons_X[:, 0]
+            recons_X2 = recons_X[:, 1]
+            if np.all(B_true == np.array([[0, 1], [0, 0]])):
+                # ground truth direction: X1->X2
+                plot_title = "Reconstructed X"
+                plot_datapoints(result_folder, plot_title, recons_X1, recons_X2, "Reconstructed X1", "Reconstructed X2")
+            elif np.all(B_true == np.array([[0, 0], [1, 0]])):
+                # ground truth direction: X2->X1
+                plot_title = "Reconstructed X"
+                plot_datapoints(result_folder, plot_title, recons_X2, recons_X1, "Reconstructed X2", "Reconstructed X1")
+            else:
+                raise Exception("What??? B_true=\n{}".format(B_true))
 
         recons_Z1_mean = recons_Z1.mean()
         recons_Z2_mean = recons_Z2.mean()
@@ -264,7 +267,7 @@ def compute_Var_E_given_C(carefl_model, direction, recons_Z, result_file, test_d
 
 
 def create_carefl_model(train_test_split, fix_AffineCL_forward, batch_size, result_folder, carefl_nl, carefl_nh,
-                        carefl_prior_dist, carefl_epochs, device, weight_decay):
+                        carefl_prior_dist, carefl_epochs, device, weight_decay, flow_SEM_type):
     config = argparse.Namespace()
 
     '''
@@ -288,7 +291,7 @@ def create_carefl_model(train_test_split, fix_AffineCL_forward, batch_size, resu
     setattr(config_flow, "scale", True)
     setattr(config_flow, "shift", True)
     setattr(config_flow, "fix_AffineCL_forward", fix_AffineCL_forward)
-    setattr(config_flow, "flow_SEM_type", "affine")
+    setattr(config_flow, "flow_SEM_type", flow_SEM_type)
     setattr(config, "flow", config_flow)
 
     config_training = argparse.Namespace()
@@ -509,6 +512,14 @@ def run_single_test(method_to_test, counter, seed, dataset_type, SEMs, noises,
 
         if random_noise == SEM_Noises.standard_gaussian:
             gt_noise_type = SEM_Noises.standard_gaussian
+        elif random_noise == SEM_Noises.gaussian0_4:
+            gt_noise_type = SEM_Noises.gaussian0_4
+        elif random_noise == SEM_Noises.gaussian0_25:
+            gt_noise_type = SEM_Noises.gaussian0_25
+        elif random_noise == SEM_Noises.gaussian0_100:
+            gt_noise_type = SEM_Noises.gaussian0_100
+        elif random_noise == SEM_Noises.gaussian0_400:
+            gt_noise_type = SEM_Noises.gaussian0_400
         elif random_noise == SEM_Noises.laplace:
             gt_noise_type = SEM_Noises.laplace
         elif random_noise == SEM_Noises.uniform:
@@ -528,6 +539,12 @@ def run_single_test(method_to_test, counter, seed, dataset_type, SEMs, noises,
             gt_sem_type = SEM_Functionals.LSNM_sine_tanh
         elif random_SEM == SEM_Functionals.LSNM_sigmoid_sigmoid:
             gt_sem_type = SEM_Functionals.LSNM_sigmoid_sigmoid
+        elif random_SEM == SEM_Functionals.ANM_sine:
+            gt_sem_type = SEM_Functionals.ANM_sine
+        elif random_SEM == SEM_Functionals.ANM_tanh:
+            gt_sem_type = SEM_Functionals.ANM_tanh
+        elif random_SEM == SEM_Functionals.ANM_sigmoid:
+            gt_sem_type = SEM_Functionals.ANM_sigmoid
         else:
             raise Exception("What??? SEM: {}".format(random_SEM))
 
@@ -555,6 +572,7 @@ def run_single_test(method_to_test, counter, seed, dataset_type, SEMs, noises,
     print("result_folder: {}".format(result_folder_args))
     append_to_file(result_file, "result_folder: {}\n".format(result_folder_args))
 
+    dataset_weight = None
     if dataset_type == "simulated":
 
         ############################################
@@ -673,19 +691,7 @@ def run_single_test(method_to_test, counter, seed, dataset_type, SEMs, noises,
     if dataset_type == "Tubingen_CEpairs":
         counter["total_Tubingen_CEpairs_weight_sum"] += dataset_weight
 
-    if method_to_test == "HECI" or method_to_test == "any":
-
-        ###############################################################################
-        # HECI
-        ###############################################################################
-        print("\nRunning HECI...")
-
-        result_folder_method = os.path.join(result_folder_args, "HECI")
-        os.makedirs(result_folder_method, exist_ok=True)
-
-        run_HECI(B_true, counter, normalized_X)
-
-    elif method_to_test == "LOCI" or method_to_test == "any":
+    if method_to_test == "LOCI":
         ###############################################################################
         # LOCI
         ###############################################################################
@@ -697,7 +703,14 @@ def run_single_test(method_to_test, counter, seed, dataset_type, SEMs, noises,
         run_LOCI(B_true, counter, dHSIC, dHSIC_kernels, device, normalized_X, result_folder_method, seed,
                  updated_batch_size)
 
-    if method_to_test == "CAREFL" or method_to_test == "any":
+    if "CAREFL" in method_to_test:
+
+        if method_to_test == "CAREFL-LSNM":
+            flow_SEM_type = "affine"
+        elif method_to_test == "CAREFL-ANM":
+            flow_SEM_type = "ANM"
+        else:
+            raise Exception("what??? method_to_test: {}".format(method_to_test))
 
         ###############################################################################
         # estimate the causal direction using a CAREFL model
@@ -729,7 +742,7 @@ def run_single_test(method_to_test, counter, seed, dataset_type, SEMs, noises,
         dHSIC_value_ZZ_x1_x2, test_log_likelihood_x1_x2, dHSIC_value_XZ_x1_x2 = run_carefl_in_one_direction(
             direction, normalized_X, result_folder_direction, recons_error_figure_title, result_file, B_true,
             updated_batch_size, split, fix_AffineCL_forward, dHSIC, dHSIC_kernels, result_folder_method, carefl_nl,
-            carefl_nh, carefl_prior_dist, carefl_epochs, device, carefl_weight_decay)
+            carefl_nh, carefl_prior_dist, carefl_epochs, device, carefl_weight_decay, flow_SEM_type)
 
         #################################################################################
         # Fit a model in the direction of X2->X1
@@ -745,7 +758,7 @@ def run_single_test(method_to_test, counter, seed, dataset_type, SEMs, noises,
         dHSIC_value_ZZ_x2_x1, test_log_likelihood_x2_x1, dHSIC_value_XZ_x2_x1 = run_carefl_in_one_direction(
             direction, normalized_X, result_folder_direction, recons_error_figure_title, result_file, B_true,
             updated_batch_size, split, fix_AffineCL_forward, dHSIC, dHSIC_kernels, result_folder_method, carefl_nl,
-            carefl_nh, carefl_prior_dist, carefl_epochs, device, carefl_weight_decay)
+            carefl_nh, carefl_prior_dist, carefl_epochs, device, carefl_weight_decay, flow_SEM_type)
 
         #################################################################################
         # compare the testing log-likelihoods
@@ -839,7 +852,7 @@ def run_single_test(method_to_test, counter, seed, dataset_type, SEMs, noises,
 
     print("\nSo far, Number of datasets tested: {}".format(counter["total"]))
 
-    if method_to_test == "CAREFL" or method_to_test == "any":
+    if "CAREFL" in method_to_test:
         print("So far, Number of directions correctly detected by CAREFL-LR: {}".format(counter["correct_CAREFL_LR"]))
         print("So far, Number of directions correctly detected by CAREFL-IT-ZZ: {}"
               .format(counter["correct_CAREFL_IT_ZZ"]))
@@ -855,7 +868,7 @@ def run_single_test(method_to_test, counter, seed, dataset_type, SEMs, noises,
             print("So far, sum of correct dataset weights by CAREFL-IT-XZ: {}"
                   .format(counter["correct_Tubingen_CEpairs_CAREFL_IT_XZ_weight_sum"]))
 
-    if method_to_test == "LOCI" or method_to_test == "any":
+    if method_to_test == "LOCI":
         print("So far, Number of directions correctly detected by LOCI_LinReg: {}"
               .format(counter["correct_LOCI_LinReg"]))
         print("So far, Number of directions correctly detected by LOCI_LinReg_HSIC: {}"
@@ -863,8 +876,6 @@ def run_single_test(method_to_test, counter, seed, dataset_type, SEMs, noises,
         print("So far, Number of directions correctly detected by LOCI_NN: {}".format(counter["correct_LOCI_NN"]))
         print("So far, Number of directions correctly detected by LOCI_NN_HSIC: {}".format(
             counter["correct_LOCI_NN_HSIC"]))
-    if method_to_test == "HECI" or method_to_test == "any":
-        print("So far, Number of directions correctly detected by HECI: {}".format(counter["correct_HECI"]))
 
     print()
 
@@ -968,33 +979,6 @@ def run_LOCI(B_true, counter, dHSIC, dHSIC_kernels, device, normalized_X, result
     counter["correct_LOCI_NN_HSIC"] += correct_direction_estimation
 
 
-def run_HECI(B_true, counter, normalized_X):
-    X = normalized_X[:, 0]
-    Y = normalized_X[:, 1]
-
-    _, scoreXtoY, scoreYtoX = HECI(X, Y)
-
-    print("HECI score X1->X2: ", scoreXtoY)
-    print("HECI score X2->X1: ", scoreYtoX)
-    print("Lower is better.")
-
-    if scoreXtoY < scoreYtoX:
-        print("estimated direction: X1->X2")
-        estimated_direction = np.array([[0, 1], [0, 0]])
-    elif scoreXtoY > scoreYtoX:
-        print("estimated direction: X2->X1")
-        estimated_direction = np.array([[0, 0], [1, 0]])
-    else:  # no conclusion
-        estimated_direction = np.array([[0, 0], [0, 0]])
-
-    if np.all(B_true == estimated_direction):
-        correct_direction_estimation = 1
-    else:
-        correct_direction_estimation = 0
-
-    counter["correct_HECI"] += correct_direction_estimation
-
-
 def run_multiple_times(args, result_folder_root, result_summary_file):
     D, H = 2, 0.5
     EXPECTED_EDGES = int(D * H)
@@ -1064,6 +1048,14 @@ def run_multiple_times(args, result_folder_root, result_summary_file):
     utils.install_packages("dHSIC")  # https://cran.r-project.org/web/packages/dHSIC/dHSIC.pdf
     dHSIC = importr('dHSIC')  # Load the dHSIC package, i.e. ```library("dHSIC")``` in R
 
+    i = extract_R_versions(utils.installed_packages())
+    package_name = 'dHSIC'
+    print("dHSIC Version: ", i[package_name])
+
+    r("""cat(paste("R version: ",R.version.string))""")  # print R version
+
+    print("\nPytorch version: ", torch.__version__)
+
     ############################################
     # Start the experiments
     ############################################
@@ -1083,7 +1075,8 @@ def run_multiple_times(args, result_folder_root, result_summary_file):
             SEMs = [SEM]
 
         if noise == 'any':
-            noises = ['laplace', 'standard-gaussian', 'uniform', 'exp', 'beta0505', 'continuous-bernoulli']
+            noises = ['laplace', 'standard-gaussian', "gaussian0_4", "gaussian0_25", "gaussian0_100",
+                      "gaussian0_400", 'uniform', 'exp', 'beta0505', 'continuous-bernoulli']
         else:
             noises = [noise]
 
@@ -1141,26 +1134,22 @@ def run_multiple_times(args, result_folder_root, result_summary_file):
         "correct_LOCI_LinReg_HSIC": None,
         "correct_LOCI_NN": None,
         "correct_LOCI_NN_HSIC": None,
-        "correct_HECI": None,
         "correct_Tubingen_CEpairs_CAREFL_LR_weight_sum": None,
         "correct_Tubingen_CEpairs_CAREFL_IT_ZZ_weight_sum": None,
         "correct_Tubingen_CEpairs_CAREFL_IT_XZ_weight_sum": None,
         "total_Tubingen_CEpairs_weight_sum": None
     }
 
-    if method_to_test == "CAREFL" or method_to_test == "any":
+    if "CAREFL" in method_to_test:
         counter["correct_CAREFL_LR"] = 0
         counter["correct_CAREFL_IT_ZZ"] = 0
         counter["correct_CAREFL_IT_XZ"] = 0
 
-    if method_to_test == "LOCI" or method_to_test == "any":
+    if method_to_test == "LOCI":
         counter["correct_LOCI_LinReg"] = 0
         counter["correct_LOCI_LinReg_HSIC"] = 0
         counter["correct_LOCI_NN"] = 0
         counter["correct_LOCI_NN_HSIC"] = 0
-
-    if method_to_test == "HECI" or method_to_test == "any":
-        counter["correct_HECI"] = 0
 
     if dataset_type == "simulated":
         for seed in range(1, number_of_datasets + 1):
@@ -1206,7 +1195,7 @@ def run_multiple_times(args, result_folder_root, result_summary_file):
     print("\n\n\nDone.")
 
     print("\nNumber of datasets tested: {}".format(counter["total"]))
-    if method_to_test == "CAREFL" or method_to_test == "any":
+    if "CAREFL" in method_to_test:
         print("Number of directions correctly detected by CAREFL-LR: {}".format(counter["correct_CAREFL_LR"]))
         print("Number of directions correctly detected by CAREFL-IT-ZZ: {}".format(counter["correct_CAREFL_IT_ZZ"]))
         print("Number of directions correctly detected by CAREFL-IT-XZ: {}".format(counter["correct_CAREFL_IT_XZ"]))
@@ -1220,38 +1209,34 @@ def run_multiple_times(args, result_folder_root, result_summary_file):
             print("Sum of correct dataset weights by CAREFL-IT-XZ: {}"
                   .format(counter["correct_Tubingen_CEpairs_CAREFL_IT_XZ_weight_sum"]))
 
-    if method_to_test == "LOCI" or method_to_test == "any":
+    if method_to_test == "LOCI":
         print("Number of directions correctly detected by LOCI_LinReg: {}".format(counter["correct_LOCI_LinReg"]))
         print("Number of directions correctly detected by LOCI_LinReg_HSIC: {}"
               .format(counter["correct_LOCI_LinReg_HSIC"]))
         print("Number of directions correctly detected by LOCI_NN: {}".format(counter["correct_LOCI_NN"]))
         print("Number of directions correctly detected by LOCI_NN_HSIC: {}".format(counter["correct_LOCI_NN_HSIC"]))
-    if method_to_test == "HECI" or method_to_test == "any":
-        print("Number of directions correctly detected by HECI: {}".format(counter["correct_HECI"]))
 
     print()
 
     append_to_file(result_summary_file,
-                   "dataset_type, SEM, g_magnitude, noise, n, carefl_nl, carefl_nh, carefl_prior_dist, carefl_epochs, "
-                   "carefl_weight_decay, train_test_split, batch_size, number_datasets, CAREFL-LR correct_count, "
-                   "CAREFL-IT-ZZ correct_count, CAREFL-IT-XZ correct_count, "
+                   "dataset_type, SEM, g_magnitude, noise, n, method_to_test, carefl_nl, carefl_nh, carefl_prior_dist, "
+                   "carefl_epochs, carefl_weight_decay, train_test_split, batch_size, number_datasets, "
+                   "CAREFL-LR correct_count, CAREFL-IT-ZZ correct_count, CAREFL-IT-XZ correct_count, "
                    "LOCI_LinReg correct_count, LOCI_LinReg_HSIC correct_count, LOCI_NN correct_count, "
-                   "LOCI_NN_HSIC correct_count, HECI correct_count, "
-                   "CAREFL-LR accuracy, CAREFL-IT-ZZ accuracy, CAREFL-IT-XZ accuracy,"
+                   "LOCI_NN_HSIC correct_count, CAREFL-LR accuracy, CAREFL-IT-ZZ accuracy, CAREFL-IT-XZ accuracy,"
                    "LOCI_LinReg accuracy, LOCI_LinReg_HSIC accuracy, LOCI_NN accuracy, LOCI_NN_HSIC accuracy, "
-                   "HECI accuracy, causal_direction_mean_conditional_variance, "
-                   "anti_causal_direction_mean_conditional_variance, number_causal_bigger_CV, "
-                   "number_anti-causal_bigger_CV, total_Tubingen_CEpairs_weight_sum, "
+                   "causal_direction_mean_conditional_variance, anti_causal_direction_mean_conditional_variance, "
+                   "number_causal_bigger_CV, number_anti-causal_bigger_CV, total_Tubingen_CEpairs_weight_sum, "
                    "Tubingen_CEpairs_CAREFL_LR_weighted_accuracy, Tubingen_CEpairs_CAREFL_IT_ZZ_weighted_accuracy, "
                    "Tubingen_CEpairs_CAREFL_IT_XZ_weighted_accuracy \n"
                    "{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, "
-                   "{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} \n"
-                   .format(dataset_type, SEM, g_magnitude, noise, n, carefl_nl, carefl_nh, carefl_prior_dist,
-                           carefl_epochs, carefl_weight_decay, split, batch_size, counter["total"],
+                   "{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} \n"
+                   .format(dataset_type, SEM, g_magnitude, noise, n, method_to_test, carefl_nl, carefl_nh,
+                           carefl_prior_dist, carefl_epochs, carefl_weight_decay, split, batch_size, counter["total"],
                            counter["correct_CAREFL_LR"], counter["correct_CAREFL_IT_ZZ"],
                            counter["correct_CAREFL_IT_XZ"], counter["correct_LOCI_LinReg"],
                            counter["correct_LOCI_LinReg_HSIC"], counter["correct_LOCI_NN"],
-                           counter["correct_LOCI_NN_HSIC"], counter["correct_HECI"],
+                           counter["correct_LOCI_NN_HSIC"],
                            counter["correct_CAREFL_LR"] / counter["total"]
                            if counter["correct_CAREFL_LR"] is not None else None,
                            counter["correct_CAREFL_IT_ZZ"] / counter["total"]
@@ -1266,8 +1251,6 @@ def run_multiple_times(args, result_folder_root, result_summary_file):
                            if counter["correct_LOCI_NN"] is not None else None,
                            counter["correct_LOCI_NN_HSIC"] / counter["total"]
                            if counter["correct_LOCI_NN_HSIC"] is not None else None,
-                           counter["correct_HECI"] / counter["total"]
-                           if counter["correct_HECI"] is not None else None,
                            true_data_variance_logger["causal_direction_total_conditional_variance"] /
                            true_data_variance_logger["number_of_datasets"]
                            if true_data_variance_logger is not None else None,
@@ -1292,6 +1275,7 @@ def run_multiple_times(args, result_folder_root, result_summary_file):
                            counter["correct_Tubingen_CEpairs_CAREFL_IT_XZ_weight_sum"]
                            / counter["total_Tubingen_CEpairs_weight_sum"]
                            if counter["correct_Tubingen_CEpairs_CAREFL_IT_XZ_weight_sum"] is not None else None,
+
                            ))
 
 
@@ -1303,8 +1287,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--method_to_test', required=False, type=str, choices=["any", "CAREFL", "LOCI", "HECI"],
-                        default="CAREFL")
+    parser.add_argument('--method_to_test', required=False, type=str, choices=["CAREFL-LSNM", "LOCI", "CAREFL-ANM", ],
+                        default="CAREFL-LSNM")
 
     parser.add_argument('--dataset_type', required=False, type=str,
                         choices=["simulated", "Tubingen_CEpairs", "SIM_benchmark_SIM", "SIM_benchmark_SIM-G",
