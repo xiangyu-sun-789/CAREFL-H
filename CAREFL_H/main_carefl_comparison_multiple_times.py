@@ -1168,8 +1168,8 @@ def run_multiple_times(args, result_folder_root, result_summary_file):
         counter["correct_Tubingen_CEpairs_CAREFL_IT_XZ_weight_sum"] = 0
         counter["total_Tubingen_CEpairs_weight_sum"] = 0
 
-        if method_to_test != "CAREFL":
-            raise Exception("counter entries for other methods with weighted accuracy are not implemented yet.")
+        if "CAREFL" not in method_to_test:
+            raise Exception("counter entries for {} with weighted accuracy are not implemented.".format(method_to_test))
 
         for training_file in training_files:
             counter = run_single_test(

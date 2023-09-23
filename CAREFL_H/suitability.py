@@ -54,7 +54,7 @@ def run(B_true, X, Z, target_direction, n):
 
     carefl_model = create_carefl_model(split, True if fix_AffineCL_forward else False, updated_batch_size,
                                        result_folder_method, carefl_nl, carefl_nh, carefl_prior_dist, carefl_epochs,
-                                       "cpu", weight_decay)
+                                       "cpu", weight_decay, "affine")
 
     train_set, _, test_dset_numpy, dim, train_dset_numpy = carefl_model._get_datasets(normalized_X)
     print("training set shape: ", train_dset_numpy.shape)
